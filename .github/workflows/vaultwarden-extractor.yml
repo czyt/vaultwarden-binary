@@ -95,12 +95,12 @@ jobs:
     steps:
       - name: Create Release
         id: create_release
-        uses: actions/create-release@v1
+        uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ needs.check-and-prepare.outputs.release_version }}-extracted
-          release_name: Extracted Binaries ${{ needs.check-and-prepare.outputs.release_version }}
+          name: Extracted Binaries ${{ needs.check-and-prepare.outputs.release_version }}
           body: |
             This release contains extracted binaries from the Vaultwarden Docker images for multiple Linux architectures.
             Original release: https://github.com/dani-garcia/vaultwarden/releases/tag/${{ needs.check-and-prepare.outputs.release_version }}
