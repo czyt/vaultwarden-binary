@@ -61,13 +61,13 @@ jobs:
             platform: linux/arm/v6
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v3
 
       - name: Extract Docker image
         run: |
@@ -83,7 +83,7 @@ jobs:
           zip -r ../vaultwarden-linux-${{ matrix.arch }}-extracted.zip vaultwarden web-vault
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: vaultwarden-linux-${{ matrix.arch }}-extracted
           path: vaultwarden-linux-${{ matrix.arch }}-extracted.zip
@@ -108,7 +108,7 @@ jobs:
           prerelease: false
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
 
       - name: Upload Release Assets
         env:
@@ -157,15 +157,15 @@ jobs:
 
       - name: Checkout code
         if: steps.check_asset.outputs.exists == 'false'
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up QEMU
         if: steps.check_asset.outputs.exists == 'false'
-        uses: docker/setup-qemu-action@v2
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         if: steps.check_asset.outputs.exists == 'false'
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v3
 
       - name: Extract Docker image
         if: steps.check_asset.outputs.exists == 'false'
