@@ -21,17 +21,18 @@ jobs:
         with:
           image: 'vaultwarden/server:latest-${{ matrix.arch }}'
           path: '/vaultwarden /web-vault'
+          destination: 'extracted-${{ matrix.arch }}'
 
       - name: Zip extracted files
         run: |
           cd ${{ steps.extract.outputs.destination }}
-          zip -r vaultwarden-${{ matrix.arch }}-extracted.zip vaultwarden web-vault
+          zip -r ../vaultwarden-${{ matrix.arch }}-extracted.zip vaultwarden web-vault
 
       - name: Upload artifact
         uses: actions/upload-artifact@v3
         with:
           name: vaultwarden-${{ matrix.arch }}-extracted
-          path: ${{ steps.extract.outputs.destination }}/vaultwarden-${{ matrix.arch }}-extracted.zip
+          path: vaultwarden-${{ matrix.arch }}-extracted.zip
 
   create-release:
     needs: extract-and-release
