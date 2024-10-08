@@ -1,0 +1,77 @@
+name: Extract and Release Vaultwarden Binaries
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 0'  # Run weekly on Sunday at 00:00 UTC
+
+jobs:
+  extract-and-release:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64, armv7, armv6]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Extract Docker image
+        uses: shrink/actions-docker-extract@v3
+        id: extract
+        with:
+          image: 'vaultwarden/server:latest-${{ matrix.arch }}'
+          path: '/vaultwarden /web-vault'
+
+      - name: Zip extracted files
+        run: |
+          cd ${{ steps.extract.outputs.destination }}
+          zip -r vaultwarden-${{ matrix.arch }}-extracted.zip vaultwarden web-vault
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: vaultwarden-${{ matrix.arch }}-extracted
+          path: ${{ steps.extract.outputs.destination }}/vaultwarden-${{ matrix.arch }}-extracted.zip
+
+  create-release:
+    needs: extract-and-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get latest release version
+        id: get_version
+        run: |
+          LATEST_RELEASE=$(curl -s https://api.github.com/repos/dani-garcia/vaultwarden/releases/latest | jq -r .tag_name)
+          echo "RELEASE_VERSION=${LATEST_RELEASE}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.get_version.outputs.RELEASE_VERSION }}-extracted
+          release_name: Extracted Binaries ${{ steps.get_version.outputs.RELEASE_VERSION }}
+          body: |
+            This release contains extracted binaries from the Vaultwarden Docker images for multiple architectures.
+            Original release: https://github.com/dani-garcia/vaultwarden/releases/tag/${{ steps.get_version.outputs.RELEASE_VERSION }}
+          draft: false
+          prerelease: false
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+
+      - name: Upload Release Assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for arch in amd64 arm64 armv7 armv6; do
+            asset_path="vaultwarden-${arch}-extracted/vaultwarden-${arch}-extracted.zip"
+            asset_name="vaultwarden-${arch}-extracted.zip"
+            curl -L \
+              -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Content-Type: application/zip" \
+              -T "${asset_path}" \
+              "https://uploads.github.com/repos/${{ github.repository }}/releases/${{ steps.create_release.outputs.id }}/assets?name=${asset_name}"
+          done
