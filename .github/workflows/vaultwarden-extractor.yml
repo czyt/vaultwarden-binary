@@ -3,7 +3,7 @@ name: Extract and Release Vaultwarden Binaries
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 0 * * 0'  # Run weekly on Sunday at 00:00 UTC
+    - cron: '0 */12 * * *'  
 
 permissions:
   contents: write
@@ -80,13 +80,13 @@ jobs:
       - name: Zip extracted files
         run: |
           cd extracted-${{ matrix.arch }}
-          zip -r ../vaultwarden-${{ matrix.arch }}-extracted.zip vaultwarden web-vault
+          zip -r ../vaultwarden-linux-${{ matrix.arch }}-extracted.zip vaultwarden web-vault
 
       - name: Upload artifact
         uses: actions/upload-artifact@v3
         with:
-          name: vaultwarden-${{ matrix.arch }}-extracted
-          path: vaultwarden-${{ matrix.arch }}-extracted.zip
+          name: vaultwarden-linux-${{ matrix.arch }}-extracted
+          path: vaultwarden-linux-${{ matrix.arch }}-extracted.zip
 
   create-release:
     needs: [check-and-prepare, extract-and-release]
@@ -102,7 +102,7 @@ jobs:
           tag_name: ${{ needs.check-and-prepare.outputs.release_version }}-extracted
           release_name: Extracted Binaries ${{ needs.check-and-prepare.outputs.release_version }}
           body: |
-            This release contains extracted binaries from the Vaultwarden Docker images for multiple architectures.
+            This release contains extracted binaries from the Vaultwarden Docker images for multiple Linux architectures.
             Original release: https://github.com/dani-garcia/vaultwarden/releases/tag/${{ needs.check-and-prepare.outputs.release_version }}
           draft: false
           prerelease: false
@@ -115,8 +115,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           for arch in amd64 arm64 armv7 armv6; do
-            asset_path="vaultwarden-${arch}-extracted/vaultwarden-${arch}-extracted.zip"
-            asset_name="vaultwarden-${arch}-extracted.zip"
+            asset_path="vaultwarden-linux-${arch}-extracted/vaultwarden-linux-${arch}-extracted.zip"
+            asset_name="vaultwarden-linux-${arch}-extracted.zip"
             curl -L \
               -X POST \
               -H "Accept: application/vnd.github+json" \
@@ -145,7 +145,7 @@ jobs:
       - name: Check if asset exists
         id: check_asset
         run: |
-          ASSET_NAME="vaultwarden-${{ matrix.arch }}-extracted.zip"
+          ASSET_NAME="vaultwarden-linux-${{ matrix.arch }}-extracted.zip"
           ASSET_EXISTS=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" https://api.github.com/repos/${{ github.repository }}/releases/${{ needs.check-and-prepare.outputs.release_id }}/assets?name=${ASSET_NAME})
           if [ "$ASSET_EXISTS" = "200" ]; then
             echo "Asset already exists, skipping extraction and upload"
@@ -180,7 +180,7 @@ jobs:
         if: steps.check_asset.outputs.exists == 'false'
         run: |
           cd extracted-${{ matrix.arch }}
-          zip -r ../vaultwarden-${{ matrix.arch }}-extracted.zip vaultwarden web-vault
+          zip -r ../vaultwarden-linux-${{ matrix.arch }}-extracted.zip vaultwarden web-vault
 
       - name: Upload Release Asset
         if: steps.check_asset.outputs.exists == 'false'
@@ -192,5 +192,5 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             -H "Content-Type: application/zip" \
-            -T "vaultwarden-${{ matrix.arch }}-extracted.zip" \
-            "https://uploads.github.com/repos/${{ github.repository }}/releases/${{ needs.check-and-prepare.outputs.release_id }}/assets?name=vaultwarden-${{ matrix.arch }}-extracted.zip"
+            -T "vaultwarden-linux-${{ matrix.arch }}-extracted.zip" \
+            "https://uploads.github.com/repos/${{ github.repository }}/releases/${{ needs.check-and-prepare.outputs.release_id }}/assets?name=vaultwarden-linux-${{ matrix.arch }}-extracted.zip"
