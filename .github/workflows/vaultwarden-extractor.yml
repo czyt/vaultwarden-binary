@@ -10,18 +10,30 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        arch: [amd64, arm64, armv7, armv6]
+        include:
+          - arch: amd64
+            platform: linux/amd64
+          - arch: arm64
+            platform: linux/arm64
+          - arch: armv7
+            platform: linux/arm/v7
+          - arch: armv6
+            platform: linux/arm/v6
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
 
       - name: Extract Docker image
         uses: shrink/actions-docker-extract@v3
         id: extract
         with:
-          image: 'vaultwarden/server:latest-${{ matrix.arch }}'
+          image: 'vaultwarden/server:latest-alpine'
           path: '/vaultwarden /web-vault'
           destination: 'extracted-${{ matrix.arch }}'
+          platform: ${{ matrix.platform }}
 
       - name: Zip extracted files
         run: |
