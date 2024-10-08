@@ -5,7 +5,6 @@ on:
   schedule:
     - cron: '0 0 * * 0'  # Run weekly on Sunday at 00:00 UTC
 
-# 添加这个权限块
 permissions:
   contents: write
   packages: write
@@ -63,8 +62,22 @@ jobs:
           LATEST_RELEASE=$(curl -s https://api.github.com/repos/dani-garcia/vaultwarden/releases/latest | jq -r .tag_name)
           echo "RELEASE_VERSION=${LATEST_RELEASE}" >> $GITHUB_OUTPUT
 
+      - name: Check if release exists
+        id: check_release
+        run: |
+          RELEASE_TAG="${{ steps.get_version.outputs.RELEASE_VERSION }}-extracted"
+          RELEASE_EXISTS=$(curl -s -o /dev/null -w "%{http_code}" https://api.github.com/repos/${{ github.repository }}/releases/tags/${RELEASE_TAG})
+          if [ "$RELEASE_EXISTS" = "200" ]; then
+            echo "Release already exists, skipping creation"
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "Release does not exist, will create"
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Create Release
         id: create_release
+        if: steps.check_release.outputs.exists == 'false'
         uses: actions/create-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -77,6 +90,13 @@ jobs:
           draft: false
           prerelease: false
 
+      - name: Get Release ID
+        id: get_release_id
+        run: |
+          RELEASE_TAG="${{ steps.get_version.outputs.RELEASE_VERSION }}-extracted"
+          RELEASE_ID=$(curl -s https://api.github.com/repos/${{ github.repository }}/releases/tags/${RELEASE_TAG} | jq -r .id)
+          echo "RELEASE_ID=${RELEASE_ID}" >> $GITHUB_OUTPUT
+
       - name: Download all artifacts
         uses: actions/download-artifact@v3
 
@@ -87,11 +107,16 @@ jobs:
           for arch in amd64 arm64 armv7 armv6; do
             asset_path="vaultwarden-${arch}-extracted/vaultwarden-${arch}-extracted.zip"
             asset_name="vaultwarden-${arch}-extracted.zip"
-            curl -L \
-              -X POST \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Content-Type: application/zip" \
-              -T "${asset_path}" \
-              "https://uploads.github.com/repos/${{ github.repository }}/releases/${{ steps.create_release.outputs.id }}/assets?name=${asset_name}"
+            ASSET_EXISTS=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" https://api.github.com/repos/${{ github.repository }}/releases/${{ steps.get_release_id.outputs.RELEASE_ID }}/assets?name=${asset_name})
+            if [ "$ASSET_EXISTS" != "200" ]; then
+              curl -L \
+                -X POST \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+                -H "Content-Type: application/zip" \
+                -T "${asset_path}" \
+                "https://uploads.github.com/repos/${{ github.repository }}/releases/${{ steps.get_release_id.outputs.RELEASE_ID }}/assets?name=${asset_name}"
+            else
+              echo "Asset ${asset_name} already exists, skipping upload"
+            fi
           done
