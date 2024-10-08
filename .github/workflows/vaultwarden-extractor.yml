@@ -10,7 +10,43 @@ permissions:
   packages: write
 
 jobs:
+  check-and-prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      release_version: ${{ steps.get_version.outputs.RELEASE_VERSION }}
+      release_exists: ${{ steps.check_release.outputs.exists }}
+      release_id: ${{ steps.get_release_id.outputs.RELEASE_ID }}
+    steps:
+      - name: Get latest release version
+        id: get_version
+        run: |
+          LATEST_RELEASE=$(curl -s https://api.github.com/repos/dani-garcia/vaultwarden/releases/latest | jq -r .tag_name)
+          echo "RELEASE_VERSION=${LATEST_RELEASE}" >> $GITHUB_OUTPUT
+
+      - name: Check if release exists
+        id: check_release
+        run: |
+          RELEASE_TAG="${{ steps.get_version.outputs.RELEASE_VERSION }}-extracted"
+          RELEASE_EXISTS=$(curl -s -o /dev/null -w "%{http_code}" https://api.github.com/repos/${{ github.repository }}/releases/tags/${RELEASE_TAG})
+          if [ "$RELEASE_EXISTS" = "200" ]; then
+            echo "Release already exists, skipping creation"
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "Release does not exist, will create"
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Get Release ID
+        id: get_release_id
+        if: steps.check_release.outputs.exists == 'true'
+        run: |
+          RELEASE_TAG="${{ steps.get_version.outputs.RELEASE_VERSION }}-extracted"
+          RELEASE_ID=$(curl -s https://api.github.com/repos/${{ github.repository }}/releases/tags/${RELEASE_TAG} | jq -r .id)
+          echo "RELEASE_ID=${RELEASE_ID}" >> $GITHUB_OUTPUT
+
   extract-and-release:
+    needs: check-and-prepare
+    if: needs.check-and-prepare.outputs.release_exists == 'false'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -53,49 +89,23 @@ jobs:
           path: vaultwarden-${{ matrix.arch }}-extracted.zip
 
   create-release:
-    needs: extract-and-release
+    needs: [check-and-prepare, extract-and-release]
+    if: needs.check-and-prepare.outputs.release_exists == 'false'
     runs-on: ubuntu-latest
     steps:
-      - name: Get latest release version
-        id: get_version
-        run: |
-          LATEST_RELEASE=$(curl -s https://api.github.com/repos/dani-garcia/vaultwarden/releases/latest | jq -r .tag_name)
-          echo "RELEASE_VERSION=${LATEST_RELEASE}" >> $GITHUB_OUTPUT
-
-      - name: Check if release exists
-        id: check_release
-        run: |
-          RELEASE_TAG="${{ steps.get_version.outputs.RELEASE_VERSION }}-extracted"
-          RELEASE_EXISTS=$(curl -s -o /dev/null -w "%{http_code}" https://api.github.com/repos/${{ github.repository }}/releases/tags/${RELEASE_TAG})
-          if [ "$RELEASE_EXISTS" = "200" ]; then
-            echo "Release already exists, skipping creation"
-            echo "exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "Release does not exist, will create"
-            echo "exists=false" >> $GITHUB_OUTPUT
-          fi
-
       - name: Create Release
         id: create_release
-        if: steps.check_release.outputs.exists == 'false'
         uses: actions/create-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ steps.get_version.outputs.RELEASE_VERSION }}-extracted
-          release_name: Extracted Binaries ${{ steps.get_version.outputs.RELEASE_VERSION }}
+          tag_name: ${{ needs.check-and-prepare.outputs.release_version }}-extracted
+          release_name: Extracted Binaries ${{ needs.check-and-prepare.outputs.release_version }}
           body: |
             This release contains extracted binaries from the Vaultwarden Docker images for multiple architectures.
-            Original release: https://github.com/dani-garcia/vaultwarden/releases/tag/${{ steps.get_version.outputs.RELEASE_VERSION }}
+            Original release: https://github.com/dani-garcia/vaultwarden/releases/tag/${{ needs.check-and-prepare.outputs.release_version }}
           draft: false
           prerelease: false
-
-      - name: Get Release ID
-        id: get_release_id
-        run: |
-          RELEASE_TAG="${{ steps.get_version.outputs.RELEASE_VERSION }}-extracted"
-          RELEASE_ID=$(curl -s https://api.github.com/repos/${{ github.repository }}/releases/tags/${RELEASE_TAG} | jq -r .id)
-          echo "RELEASE_ID=${RELEASE_ID}" >> $GITHUB_OUTPUT
 
       - name: Download all artifacts
         uses: actions/download-artifact@v3
@@ -107,16 +117,80 @@ jobs:
           for arch in amd64 arm64 armv7 armv6; do
             asset_path="vaultwarden-${arch}-extracted/vaultwarden-${arch}-extracted.zip"
             asset_name="vaultwarden-${arch}-extracted.zip"
-            ASSET_EXISTS=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" https://api.github.com/repos/${{ github.repository }}/releases/${{ steps.get_release_id.outputs.RELEASE_ID }}/assets?name=${asset_name})
-            if [ "$ASSET_EXISTS" != "200" ]; then
-              curl -L \
-                -X POST \
-                -H "Accept: application/vnd.github+json" \
-                -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-                -H "Content-Type: application/zip" \
-                -T "${asset_path}" \
-                "https://uploads.github.com/repos/${{ github.repository }}/releases/${{ steps.get_release_id.outputs.RELEASE_ID }}/assets?name=${asset_name}"
-            else
-              echo "Asset ${asset_name} already exists, skipping upload"
-            fi
+            curl -L \
+              -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Content-Type: application/zip" \
+              -T "${asset_path}" \
+              "https://uploads.github.com/repos/${{ github.repository }}/releases/${{ steps.create_release.outputs.id }}/assets?name=${asset_name}"
           done
+
+  update-existing-release:
+    needs: check-and-prepare
+    if: needs.check-and-prepare.outputs.release_exists == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+          - arch: arm64
+            platform: linux/arm64
+          - arch: armv7
+            platform: linux/arm/v7
+          - arch: armv6
+            platform: linux/arm/v6
+    steps:
+      - name: Check if asset exists
+        id: check_asset
+        run: |
+          ASSET_NAME="vaultwarden-${{ matrix.arch }}-extracted.zip"
+          ASSET_EXISTS=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" https://api.github.com/repos/${{ github.repository }}/releases/${{ needs.check-and-prepare.outputs.release_id }}/assets?name=${ASSET_NAME})
+          if [ "$ASSET_EXISTS" = "200" ]; then
+            echo "Asset already exists, skipping extraction and upload"
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "Asset does not exist, will extract and upload"
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout code
+        if: steps.check_asset.outputs.exists == 'false'
+        uses: actions/checkout@v3
+
+      - name: Set up QEMU
+        if: steps.check_asset.outputs.exists == 'false'
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        if: steps.check_asset.outputs.exists == 'false'
+        uses: docker/setup-buildx-action@v2
+
+      - name: Extract Docker image
+        if: steps.check_asset.outputs.exists == 'false'
+        run: |
+          CONTAINER_ID=$(docker create --platform ${{ matrix.platform }} vaultwarden/server:latest-alpine)
+          mkdir -p extracted-${{ matrix.arch }}
+          docker cp $CONTAINER_ID:/vaultwarden extracted-${{ matrix.arch }}/
+          docker cp $CONTAINER_ID:/web-vault extracted-${{ matrix.arch }}/
+          docker rm $CONTAINER_ID
+
+      - name: Zip extracted files
+        if: steps.check_asset.outputs.exists == 'false'
+        run: |
+          cd extracted-${{ matrix.arch }}
+          zip -r ../vaultwarden-${{ matrix.arch }}-extracted.zip vaultwarden web-vault
+
+      - name: Upload Release Asset
+        if: steps.check_asset.outputs.exists == 'false'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -L \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Content-Type: application/zip" \
+            -T "vaultwarden-${{ matrix.arch }}-extracted.zip" \
+            "https://uploads.github.com/repos/${{ github.repository }}/releases/${{ needs.check-and-prepare.outputs.release_id }}/assets?name=vaultwarden-${{ matrix.arch }}-extracted.zip"
