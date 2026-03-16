@@ -2,5 +2,4 @@
 
 just a action which runs Every 8 Hours to extract latest vaultwarden server binary and web ,and make a release in this repo
 
-## Documents
-+ [Vaultwarden wiki in chinese](https://rs.ppgg.in)
+for windows binary,ref https://github.com/nextyancc/Vaultwarden-Windows-Binary
