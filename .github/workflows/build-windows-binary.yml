@@ -1,0 +1,265 @@
+name: Build and Release Vaultwarden Windows Binary
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * *'  # 每天凌晨2点运行一次
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  check-and-prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      release_version: ${{ steps.get_version.outputs.RELEASE_VERSION }}
+      release_exists: ${{ steps.check_release.outputs.exists }}
+      release_id: ${{ steps.get_release_id.outputs.RELEASE_ID }}
+      windows_asset_exists: ${{ steps.check_windows_asset.outputs.exists }}
+    steps:
+      - name: Get latest release version
+        id: get_version
+        run: |
+          LATEST_RELEASE=$(curl -s https://api.github.com/repos/dani-garcia/vaultwarden/releases/latest | jq -r .tag_name)
+          echo "RELEASE_VERSION=${LATEST_RELEASE}" >> $GITHUB_OUTPUT
+          echo "Latest Vaultwarden version: ${LATEST_RELEASE}"
+
+      - name: Check if release exists
+        id: check_release
+        run: |
+          RELEASE_TAG="${{ steps.get_version.outputs.RELEASE_VERSION }}-windows"
+          RELEASE_EXISTS=$(curl -s -o /dev/null -w "%{http_code}" https://api.github.com/repos/${{ github.repository }}/releases/tags/${RELEASE_TAG})
+          if [ "$RELEASE_EXISTS" = "200" ]; then
+            echo "Release already exists"
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "Release does not exist, will create"
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Get Release ID
+        id: get_release_id
+        if: steps.check_release.outputs.exists == 'true'
+        run: |
+          RELEASE_TAG="${{ steps.get_version.outputs.RELEASE_VERSION }}-windows"
+          RELEASE_ID=$(curl -s https://api.github.com/repos/${{ github.repository }}/releases/tags/${RELEASE_TAG} | jq -r .id)
+          echo "RELEASE_ID=${RELEASE_ID}" >> $GITHUB_OUTPUT
+
+      - name: Check if Windows asset exists
+        id: check_windows_asset
+        if: steps.check_release.outputs.exists == 'true'
+        run: |
+          RELEASE_ID="${{ steps.get_release_id.outputs.RELEASE_ID }}"
+          ASSETS=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/${RELEASE_ID}/assets")
+          
+          WINDOWS_ASSET_EXISTS=$(echo "$ASSETS" | jq -r '.[] | select(.name | test("vaultwarden.*windows.*\\.exe$")) | .name' | head -1)
+          
+          if [ -n "$WINDOWS_ASSET_EXISTS" ]; then
+            echo "Windows binary already exists: $WINDOWS_ASSET_EXISTS"
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "Windows binary does not exist, will build"
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+  build-windows:
+    needs: check-and-prepare
+    if: needs.check-and-prepare.outputs.release_exists == 'false' || needs.check-and-prepare.outputs.windows_asset_exists == 'false'
+    runs-on: windows-latest
+    
+    steps:
+    - name: Get Vaultwarden source code
+      run: |
+        git clone --depth 1 --branch ${{ needs.check-and-prepare.outputs.release_version }} https://github.com/dani-garcia/vaultwarden.git
+        cd vaultwarden
+        
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: x86_64-pc-windows-msvc
+        components: rustfmt, clippy
+        
+    - name: Setup vcpkg and install dependencies
+      shell: powershell
+      run: |
+        # 设置 vcpkg 路径
+        $env:VCPKG_ROOT = "C:\vcpkg"
+        Write-Host "VCPKG_ROOT: $env:VCPKG_ROOT"
+        
+        # 更新 vcpkg
+        git -C C:\vcpkg pull
+        
+        # 安装 OpenSSL (静态链接)
+        C:\vcpkg\vcpkg.exe install openssl:x64-windows-static
+        
+        # 集成 vcpkg
+        C:\vcpkg\vcpkg.exe integrate install
+        
+        # 设置环境变量
+        echo "VCPKG_ROOT=C:\vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        echo "OPENSSL_STATIC=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        echo "OPENSSL_DIR=C:\vcpkg\installed\x64-windows-static" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        echo "OPENSSL_LIB_DIR=C:\vcpkg\installed\x64-windows-static\lib" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        echo "OPENSSL_INCLUDE_DIR=C:\vcpkg\installed\x64-windows-static\include" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        
+        # 添加到 PATH
+        echo "C:\vcpkg\installed\x64-windows-static\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          vaultwarden/target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('vaultwarden/**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+          
+    - name: Cache vcpkg
+      uses: actions/cache@v4
+      with:
+        path: C:\vcpkg\installed
+        key: ${{ runner.os }}-vcpkg-openssl
+        restore-keys: |
+          ${{ runner.os }}-vcpkg-
+          
+    - name: Check Rust environment
+      run: |
+        rustc --version
+        cargo --version
+        echo "VCPKG_ROOT: $env:VCPKG_ROOT"
+        echo "OPENSSL_STATIC: $env:OPENSSL_STATIC"
+        echo "OPENSSL_DIR: $env:OPENSSL_DIR"
+        
+    - name: Build release binary
+      shell: powershell
+      run: |
+        cd vaultwarden
+        
+        # 设置 Rust 编译器环境变量
+        $env:RUSTFLAGS = "-C target-feature=+crt-static"
+        
+        # 构建项目 (Vaultwarden 默认使用 sqlite 特性)
+        cargo build --features sqlite --release --target x86_64-pc-windows-msvc
+        
+    - name: Prepare release files
+      run: |
+        cd vaultwarden
+        
+        # 创建发布目录
+        New-Item -ItemType Directory -Path "release-files" -Force
+        
+        # 复制二进制文件并重命名
+        $VERSION = "${{ needs.check-and-prepare.outputs.release_version }}"
+        Copy-Item "target\x86_64-pc-windows-msvc\release\vaultwarden.exe" "release-files\vaultwarden-${VERSION}-windows-x64.exe"
+        
+        # 创建版本信息文件
+        @"
+        Vaultwarden Windows Binary
+        Version: ${VERSION}
+        Built: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')
+        Target: x86_64-pc-windows-msvc
+        Features: sqlite
+        Source: https://github.com/dani-garcia/vaultwarden/releases/tag/${VERSION}
+        "@ | Out-File -FilePath "release-files\README.txt" -Encoding utf8
+        
+    - name: List built files
+      run: |
+        Get-ChildItem -Path "vaultwarden\release-files\" -Recurse | ForEach-Object { Write-Host $_.FullName }
+        
+    - name: Upload binary artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: vaultwarden-windows-binary
+        path: vaultwarden/release-files/*
+        if-no-files-found: error
+
+  create-release:
+    needs: [check-and-prepare, build-windows]
+    if: needs.check-and-prepare.outputs.release_exists == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Windows binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: vaultwarden-windows-binary
+          path: ./windows-binary
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ needs.check-and-prepare.outputs.release_version }}-windows
+          name: Vaultwarden Windows Binary ${{ needs.check-and-prepare.outputs.release_version }}
+          body: |
+            This release contains Windows binary compiled from Vaultwarden source code.
+            
+            **Features:**
+            - Built with SQLite support
+            - Statically linked for easy deployment
+            - x64 architecture (x86_64-pc-windows-msvc)
+            
+            **Original Release:** https://github.com/dani-garcia/vaultwarden/releases/tag/${{ needs.check-and-prepare.outputs.release_version }}
+            
+          draft: false
+          prerelease: false
+          files: ./windows-binary/*
+
+  update-existing-release:
+    needs: [check-and-prepare, build-windows]
+    if: needs.check-and-prepare.outputs.release_exists == 'true' && needs.check-and-prepare.outputs.windows_asset_exists == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Windows binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: vaultwarden-windows-binary
+          path: ./windows-binary
+
+      - name: Upload Windows binary to existing release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RELEASE_ID="${{ needs.check-and-prepare.outputs.release_id }}"
+          
+          for file in ./windows-binary/*; do
+            if [ -f "$file" ]; then
+              filename=$(basename "$file")
+              echo "Uploading $filename to release $RELEASE_ID"
+              
+              curl -L \
+                -X POST \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+                -H "Content-Type: application/octet-stream" \
+                -T "$file" \
+                "https://uploads.github.com/repos/${{ github.repository }}/releases/${RELEASE_ID}/assets?name=${filename}"
+            fi
+          done
+
+  summary:
+    needs: [check-and-prepare, build-windows, create-release, update-existing-release]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Job Summary
+        run: |
+          echo "## Vaultwarden Windows Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Latest Vaultwarden Version:** ${{ needs.check-and-prepare.outputs.release_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Release Existed:** ${{ needs.check-and-prepare.outputs.release_exists }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Windows Asset Existed:** ${{ needs.check-and-prepare.outputs.windows_asset_exists }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ needs.check-and-prepare.outputs.release_exists }}" = "false" ] || [ "${{ needs.check-and-prepare.outputs.windows_asset_exists }}" = "false" ]; then
+            echo "✅ **Action Taken:** Built and uploaded Windows binary" >> $GITHUB_STEP_SUMMARY
+            echo "📦 **Release URL:** https://github.com/${{ github.repository }}/releases/tag/${{ needs.check-and-prepare.outputs.release_version }}-windows" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "ℹ️ **Action Taken:** No action needed, Windows binary already exists" >> $GITHUB_STEP_SUMMARY
+          fi
